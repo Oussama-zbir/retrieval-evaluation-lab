@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "retrieval-evaluation-lab"
+version = "0.1.0"
+description = "Retrieval pipelines measured, not demoed: BM25, dense, hybrid and reranking evaluated on public relevance judgements with versioned run records."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Oussama Zbir", email = "oussamazbirpro@gmail.com" }]
+keywords = ["information-retrieval", "rag", "bm25", "evaluation", "beir", "ndcg"]
+dependencies = [
+    "pydantic>=2.7",
+    "PyStemmer>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Reference trec_eval implementation; the metric tests check equivalence against it.
+    "pytrec-eval-terrier>=0.5.6",
+    "pytest>=8.2",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+retrieval-lab = "retrieval_lab.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/retrieval_lab"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+files = ["src", "tests"]
+
+# PyStemmer and pytrec_eval ship no type information.
+[[tool.mypy.overrides]]
+module = ["Stemmer", "pytrec_eval"]
+ignore_missing_imports = true

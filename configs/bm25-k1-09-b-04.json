@@ -1,0 +1,10 @@
+{
+  "name": "bm25-k1-09-b-04",
+  "retriever": {
+    "kind": "bm25",
+    "k1": 0.9,
+    "b": 0.4,
+    "analyzer": {"lowercase": true, "stopwords": "lucene-english", "stemmer": "porter"}
+  },
+  "top_k": 100
+}
