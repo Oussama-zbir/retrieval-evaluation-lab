@@ -1,4 +1,4 @@
-"""Command line: ``retrieval-lab fetch``, ``run`` and ``reproduce``."""
+"""Command line: ``retrieval-lab fetch``, ``run``, ``reproduce`` and ``compare``."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from retrieval_lab import datasets
+from retrieval_lab import compare, datasets
 from retrieval_lab.config import PipelineConfig
 from retrieval_lab.runs import RunRecord, execute
 
@@ -35,6 +35,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     reproduce.add_argument("record", type=Path)
     reproduce.add_argument("--data-dir", type=Path, default=Path("data"))
 
+    comparison = commands.add_parser(
+        "compare", help="paired significance test of candidate records against a baseline"
+    )
+    comparison.add_argument("baseline", type=Path)
+    comparison.add_argument("candidates", type=Path, nargs="+")
+    comparison.add_argument(
+        "--metric",
+        action="append",
+        dest="metrics",
+        help="metric to compare (repeatable; default: ndcg@10 and recall@100)",
+    )
+    comparison.add_argument("--trials", type=int, default=10_000)
+    comparison.add_argument("--seed", type=int, default=0)
+    comparison.add_argument("--confidence", type=float, default=0.95)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "fetch":
@@ -43,8 +58,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "reproduce":
             return _reproduce(args)
+        if args.command == "compare":
+            return _compare(args)
         return _run(args)
-    except (datasets.DatasetError, ValidationError, OSError) as exc:
+    except (datasets.DatasetError, ValidationError, OSError, compare.ComparisonError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -88,6 +105,16 @@ def _reproduce(args: argparse.Namespace) -> int:
         print(f"{recorded.run_id}: NOT reproduced")
         return 1
     print(f"{recorded.run_id}: reproduced ({len(recorded.per_query)} queries, metrics identical)")
+    return 0
+
+
+def _compare(args: argparse.Namespace) -> int:
+    baseline = RunRecord.read(args.baseline)
+    candidates = [RunRecord.read(path) for path in args.candidates]
+    metrics = args.metrics or ["ndcg@10", "recall@100"]
+    options = {"trials": args.trials, "seed": args.seed, "confidence": args.confidence}
+    rows = compare.compare(baseline, candidates, metrics, **options)
+    print(compare.render_markdown(baseline, candidates, rows, **options), end="")
     return 0
 
 

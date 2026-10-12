@@ -73,3 +73,9 @@ jobs:
           for record in runs/*/*.json; do
             retrieval-lab reproduce "$record"
           done
+
+      # Prints the README significance table from the checked-in records.
+      - name: Compare against the BM25 baseline
+        run: |
+          retrieval-lab compare runs/scifact/*-bm25-780acdbb.json \
+            runs/scifact/*-bm25-k1-09-b-04-*.json runs/scifact/*-bm25-no-stemming-*.json

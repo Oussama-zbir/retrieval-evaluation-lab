@@ -49,9 +49,22 @@ Reading the table:
   stopwords and stemming costs 0.02 nDCG@10 and 4.5 points of Recall@100, and
   doubles query latency, because stopwords have long posting lists. Changing
   k1/b moves nDCG@10 by 0.006.
-- **None of these differences has been tested for significance yet.** With 300
-  queries, a 0.006 gap is likely noise. Paired significance testing is the next
-  piece of work, before any pipeline is called better than another.
+- **Only the stemming effect on recall survives a significance test.**
+  `retrieval-lab compare` runs a paired randomisation test per metric and
+  adjusts for the four comparisons (Holm):
+
+  | Candidate vs `bm25` | Metric | Delta | 95% CI | W / T / L | p (Holm) |
+  |---|---|---|---|---|---|
+  | `bm25-k1-09-b-04` | nDCG@10 | -0.0059 | [-0.0154, +0.0038] | 15 / 253 / 32 | 0.45 |
+  | `bm25-k1-09-b-04` | Recall@100 | +0.0011 | [+0.0000, +0.0033] | 1 / 299 / 0 | 1.00 |
+  | `bm25-no-stemming` | nDCG@10 | -0.0193 | [-0.0383, -0.0019] | 33 / 227 / 40 | 0.11 |
+  | `bm25-no-stemming` | Recall@100 | -0.0450 | [-0.0717, -0.0217] | 1 / 284 / 15 | 0.003 |
+
+  The k1/b change is noise. Dropping stemming loses Recall@100 on 15 queries
+  and gains it on one. Its nDCG@10 loss has p = 0.036 before adjustment and a
+  bootstrap interval that excludes zero, but after correcting for four tests
+  it is not significant at 0.05. Most queries are ties: on 300 queries, small
+  pipeline changes alter few rankings.
 - Latency is single-threaded pure Python on a laptop, so only the relative
   numbers mean anything.
 
@@ -64,6 +77,7 @@ pip install -e ".[dev]"
 retrieval-lab fetch scifact                     # download, verify MD5, extract to data/
 retrieval-lab run --dataset scifact --config configs/bm25.json
 retrieval-lab reproduce runs/scifact/<run-id>.json
+retrieval-lab compare runs/scifact/<baseline>.json runs/scifact/<candidate>.json ...
 ```
 
 A pipeline is a JSON file validated by Pydantic. Unknown fields are rejected, so
@@ -107,6 +121,17 @@ document nobody judged counts as not relevant; this is the standard assumption,
 and it is biased against systems that find relevant documents the assessors
 never saw. That bias matters more once dense retrieval is added.
 
+**A pipeline is not "better" until a paired test says so.** Both pipelines are
+scored on the same queries, so `compare` works on per-query differences: a
+two-sided sign-flip randomisation test for the p-value (recommended for IR by
+Smucker, Allan and Carterette, 2007; estimated as (hits + 1) / (trials + 1), so
+it is never 0) and a paired percentile bootstrap for the interval. One baseline
+against several candidates on several metrics is a family of tests, so p-values
+are Holm-adjusted across the whole report. Records with different dataset
+fingerprints or query sets are refused rather than compared. The test is
+checked against exact enumeration of all 2^n sign flips on small inputs. Both
+procedures are seeded, so a report is deterministic.
+
 ## Layout
 
 ```
@@ -117,7 +142,8 @@ src/retrieval_lab/
   metrics.py    nDCG / Recall / MRR at k, trec_eval conventions
   config.py     frozen, hashable pipeline configs
   runs.py       execute a pipeline, build and persist the run record
-  cli.py        fetch / run / reproduce
+  compare.py    paired randomisation test, bootstrap CI, Holm adjustment
+  cli.py        fetch / run / reproduce / compare
 configs/        checked-in pipeline configs
 runs/           checked-in run records (evidence for the Results table)
 ```
@@ -125,7 +151,7 @@ runs/           checked-in run records (evidence for the Results table)
 ## Testing
 
 ```bash
-pytest          # 37 tests, offline; no dataset download needed
+pytest          # 49 tests, offline; no dataset download needed
 ruff check . && ruff format --check .
 mypy            # strict
 ```
@@ -139,19 +165,19 @@ CI runs these on Python 3.12 and 3.13. A separate job fetches SciFact and runs
   conclusions about stemming or k1/b may not transfer.
 - Single in-memory index in pure Python: fine for BEIR-scale corpora, not a
   serving design.
-- No significance testing yet (next).
+- Significance is per dataset. With 300 queries and mostly tied rankings,
+  the tests can only detect fairly large effects; a non-significant delta is
+  not evidence of no difference.
 - Recorded latency is wall-clock on the machine that ran it and is excluded
   from the reproduction check.
 
 ## Roadmap
 
-1. Paired significance tests (randomisation / bootstrap) and a comparison
-   report across run records.
-2. Dense retrieval with a sentence-embedding model, then reciprocal-rank-fusion
+1. Dense retrieval with a sentence-embedding model, then reciprocal-rank-fusion
    hybrid, each as a measured delta.
-3. Cross-encoder reranking, with the latency cost recorded next to the quality gain.
-4. Chunking and ingestion strategy as a measured variable.
-5. An LLM-judge answer-faithfulness metric, validated against human labels
+2. Cross-encoder reranking, with the latency cost recorded next to the quality gain.
+3. Chunking and ingestion strategy as a measured variable.
+4. An LLM-judge answer-faithfulness metric, validated against human labels
    before it is trusted.
 
 ## Data
