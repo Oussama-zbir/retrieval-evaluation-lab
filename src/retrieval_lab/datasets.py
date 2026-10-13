@@ -34,6 +34,11 @@ SOURCES: Mapping[str, DatasetSource] = {
         url=f"{BEIR_BASE_URL}/scifact.zip",
         md5="5f7d1de60b170fc8027bb7898e2efca1",
     ),
+    "nfcorpus": DatasetSource(
+        name="nfcorpus",
+        url=f"{BEIR_BASE_URL}/nfcorpus.zip",
+        md5="a89dba18a62ef92f7d323ec890a0d38d",
+    ),
 }
 
 

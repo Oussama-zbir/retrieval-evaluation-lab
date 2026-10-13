@@ -65,8 +65,10 @@ jobs:
           path: data
           key: beir-${{ hashFiles('src/retrieval_lab/datasets.py') }}
 
-      - name: Fetch and verify SciFact
-        run: retrieval-lab fetch scifact
+      - name: Fetch and verify datasets
+        run: |
+          retrieval-lab fetch scifact
+          retrieval-lab fetch nfcorpus
 
       - name: Reproduce run records
         run: |
@@ -74,8 +76,10 @@ jobs:
             retrieval-lab reproduce "$record"
           done
 
-      # Prints the README significance table from the checked-in records.
+      # Prints the README significance tables from the checked-in records.
       - name: Compare against the BM25 baseline
         run: |
-          retrieval-lab compare runs/scifact/*-bm25-780acdbb.json \
-            runs/scifact/*-bm25-k1-09-b-04-*.json runs/scifact/*-bm25-no-stemming-*.json
+          for dataset in scifact nfcorpus; do
+            retrieval-lab compare runs/$dataset/*-bm25-780acdbb.json \
+              runs/$dataset/*-bm25-k1-09-b-04-*.json runs/$dataset/*-bm25-no-stemming-*.json
+          done

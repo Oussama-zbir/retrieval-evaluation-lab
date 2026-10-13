@@ -14,19 +14,24 @@ change made it better?*
 ## Status
 
 This is the foundation: data handling, metrics, run records and a BM25
-baseline. Dense retrieval, hybrid fusion, reranking and an LLM-judge metric come
-next (see [Roadmap](#roadmap)); each will be added as a measured delta against
-the baseline.
+baseline on two BEIR datasets. Dense retrieval, hybrid fusion, reranking and
+an LLM-judge metric come next (see [Roadmap](#roadmap)); each will be added as a
+measured delta against the baseline.
 
 | Area | What exists |
 |---|---|
-| Data | BEIR-format loader; downloads pinned to the published MD5; zip-slip-safe extraction; qrels cross-checked against the corpus and queries |
+| Data | SciFact and NFCorpus (BEIR); loader downloads pinned to the published MD5; zip-slip-safe extraction; qrels cross-checked against the corpus and queries |
 | Metrics | nDCG@k, Recall@k, MRR@k, tested for equivalence with `trec_eval` (via `pytrec_eval`) on randomised rankings |
 | Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration |
 | Run records | Dataset SHA-256 fingerprint, full pipeline config and hash, source digest, git SHA, library versions, mean and per-query metrics, latency |
 | Reproducibility | `retrieval-lab reproduce` re-runs a record and fails on any metric or per-query difference; CI does this for every checked-in record |
 
-## Results: SciFact (BEIR), test split
+## Results
+
+The same three pipelines on two datasets, so a conclusion is only stated if it
+holds on more than one corpus.
+
+### SciFact (BEIR), test split
 
 5,183 abstracts, 300 test claims, 339 relevance judgements.
 
@@ -68,13 +73,50 @@ Reading the table:
 - Latency is single-threaded pure Python on a laptop, so only the relative
   numbers mean anything.
 
+### NFCorpus (BEIR), test split
+
+3,633 medical documents (PubMed abstracts), 323 test queries, 12,334 graded
+judgements (11,758 at grade 1, 576 at grade 2). Queries are short lay-language
+titles from NutritionFacts.org; documents are technical.
+
+| Pipeline | nDCG@10 | Recall@10 | Recall@100 | MRR@10 | p50 query |
+|---|---|---|---|---|---|
+| `bm25` (k1 1.2, b 0.75, stopwords + Porter) | **0.322** | **0.153** | **0.246** | **0.527** | 0.11 ms |
+| `bm25-k1-09-b-04` (Anserini's defaults) | 0.321 | 0.152 | **0.246** | 0.523 | 0.12 ms |
+| `bm25-no-stemming` (lowercase only) | 0.306 | 0.149 | 0.236 | 0.514 | 0.19 ms |
+
+Records: [`runs/nfcorpus/`](runs/nfcorpus/).
+
+| Candidate vs `bm25` | Metric | Delta | 95% CI | W / T / L | p (Holm) |
+|---|---|---|---|---|---|
+| `bm25-k1-09-b-04` | nDCG@10 | -0.0018 | [-0.0056, +0.0020] | 51 / 214 / 58 | 0.70 |
+| `bm25-k1-09-b-04` | Recall@100 | -0.0001 | [-0.0025, +0.0020] | 21 / 282 / 20 | 0.93 |
+| `bm25-no-stemming` | nDCG@10 | -0.0161 | [-0.0267, -0.0056] | 67 / 177 / 79 | 0.016 |
+| `bm25-no-stemming` | Recall@100 | -0.0104 | [-0.0181, -0.0010] | 25 / 224 / 74 | 0.020 |
+
+- **The baseline matches the published number.** BEIR reports 0.325 nDCG@10
+  for Elasticsearch BM25 on NFCorpus; this index gives 0.322.
+- **Stemming now matters for ranking quality too.** Without it, both nDCG@10
+  and Recall@100 drop significantly after Holm adjustment. On SciFact only
+  recall did. The nDCG@10 loss is smaller here (-0.016 against -0.019), but
+  its bootstrap interval is about half as wide, so it is detected. The
+  direction agrees across both datasets; the strength of the evidence does
+  not, which is the reason for running more than one.
+- **k1/b is noise on both datasets.** Neither delta comes close to
+  significance on either corpus, so further BM25 parameter search is not worth
+  a session.
+- **Low recall is partly the benchmark, not the retriever.** NFCorpus queries
+  average 38 relevant documents (median 16, maximum 475); 22 queries have more
+  than 100, so Recall@100 cannot reach 1 for them. Absolute values are only
+  comparable between pipelines on the same dataset.
+
 ## Usage
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-retrieval-lab fetch scifact                     # download, verify MD5, extract to data/
+retrieval-lab fetch scifact                     # or nfcorpus; download, verify MD5, extract
 retrieval-lab run --dataset scifact --config configs/bm25.json
 retrieval-lab reproduce runs/scifact/<run-id>.json
 retrieval-lab compare runs/scifact/<baseline>.json runs/scifact/<candidate>.json ...
@@ -156,13 +198,14 @@ ruff check . && ruff format --check .
 mypy            # strict
 ```
 
-CI runs these on Python 3.12 and 3.13. A separate job fetches SciFact and runs
-`reproduce` on every record in `runs/`.
+CI runs these on Python 3.12 and 3.13. A separate job fetches both datasets,
+runs `reproduce` on every record in `runs/`, and prints both comparison tables.
 
 ## Limitations
 
-- One dataset so far. SciFact is small (5k documents) and domain-specific;
-  conclusions about stemming or k1/b may not transfer.
+- Two small scientific/medical datasets (3.6k and 5.2k documents). Conclusions
+  about the analyzer agree across them, but neither covers general-domain web
+  text or a corpus large enough to stress the index.
 - Single in-memory index in pure Python: fine for BEIR-scale corpora, not a
   serving design.
 - Significance is per dataset. With 300 queries and mostly tied rankings,
@@ -182,5 +225,6 @@ CI runs these on Python 3.12 and 3.13. A separate job fetches SciFact and runs
 
 ## Data
 
-SciFact (Wadden et al., 2020) as distributed by BEIR (Thakur et al., 2021). The
-dataset is downloaded at run time and not redistributed here.
+SciFact (Wadden et al., 2020) and NFCorpus (Boteva et al., 2016) as
+distributed by BEIR (Thakur et al., 2021). Datasets are downloaded at run time
+and not redistributed here.
