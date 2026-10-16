@@ -5,7 +5,7 @@
 Retrieval pipelines for RAG, measured instead of demoed. Each pipeline runs
 against a public corpus with human relevance judgements, and every result is a
 versioned run record that CI re-executes from the raw data and requires to match
-exactly.
+exactly (or, for float embeddings, within a stated tolerance).
 
 The question this repository answers is the one every RAG system eventually
 gets asked: *how do you know the retriever is any good, and how do you know a
@@ -13,22 +13,22 @@ change made it better?*
 
 ## Status
 
-This is the foundation: data handling, metrics, run records and a BM25
-baseline on two BEIR datasets. Dense retrieval, hybrid fusion, reranking and
-an LLM-judge metric come next (see [Roadmap](#roadmap)); each will be added as a
-measured delta against the baseline.
+Data handling, metrics, run records, a BM25 baseline and a first dense
+retriever on two BEIR datasets. Hybrid fusion, reranking and an LLM-judge
+metric come next (see [Roadmap](#roadmap)); each will be added as a measured
+delta against the baseline.
 
 | Area | What exists |
 |---|---|
 | Data | SciFact and NFCorpus (BEIR); loader downloads pinned to the published MD5; zip-slip-safe extraction; qrels cross-checked against the corpus and queries |
 | Metrics | nDCG@k, Recall@k, MRR@k, tested for equivalence with `trec_eval` (via `pytrec_eval`) on randomised rankings |
-| Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration |
+| Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration. Dense bi-encoder (sentence-transformers, model pinned to a commit) with exact cosine search in numpy |
 | Run records | Dataset SHA-256 fingerprint, full pipeline config and hash, source digest, git SHA, library versions, mean and per-query metrics, latency |
-| Reproducibility | `retrieval-lab reproduce` re-runs a record and fails on any metric or per-query difference; CI does this for every checked-in record |
+| Reproducibility | `retrieval-lab reproduce` re-runs a record; BM25 must match exactly, dense within 0.001 per mean metric. CI does this for every checked-in record |
 
 ## Results
 
-The same three pipelines on two datasets, so a conclusion is only stated if it
+The same four pipelines on two datasets, so a conclusion is only stated if it
 holds on more than one corpus.
 
 ### SciFact (BEIR), test split
@@ -40,6 +40,7 @@ holds on more than one corpus.
 | `bm25` (k1 1.2, b 0.75, stopwords + Porter) | **0.683** | **0.817** | 0.928 | **0.646** | 0.95 ms |
 | `bm25-k1-09-b-04` (Anserini's defaults) | 0.677 | 0.803 | **0.929** | 0.642 | 0.96 ms |
 | `bm25-no-stemming` (lowercase only) | 0.663 | 0.788 | 0.883 | 0.631 | 2.15 ms |
+| `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.645 | 0.783 | 0.925 | 0.605 | 5.1 ms |
 
 Records: [`runs/scifact/`](runs/scifact/). Configs: [`configs/`](configs/).
 
@@ -81,9 +82,10 @@ titles from NutritionFacts.org; documents are technical.
 
 | Pipeline | nDCG@10 | Recall@10 | Recall@100 | MRR@10 | p50 query |
 |---|---|---|---|---|---|
-| `bm25` (k1 1.2, b 0.75, stopwords + Porter) | **0.322** | **0.153** | **0.246** | **0.527** | 0.11 ms |
-| `bm25-k1-09-b-04` (Anserini's defaults) | 0.321 | 0.152 | **0.246** | 0.523 | 0.12 ms |
+| `bm25` (k1 1.2, b 0.75, stopwords + Porter) | **0.322** | 0.153 | 0.246 | **0.527** | 0.11 ms |
+| `bm25-k1-09-b-04` (Anserini's defaults) | 0.321 | 0.152 | 0.246 | 0.523 | 0.12 ms |
 | `bm25-no-stemming` (lowercase only) | 0.306 | 0.149 | 0.236 | 0.514 | 0.19 ms |
+| `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.317 | **0.155** | **0.311** | 0.508 | 4.7 ms |
 
 Records: [`runs/nfcorpus/`](runs/nfcorpus/).
 
@@ -110,11 +112,45 @@ Records: [`runs/nfcorpus/`](runs/nfcorpus/).
   than 100, so Recall@100 cannot reach 1 for them. Absolute values are only
   comparable between pipelines on the same dataset.
 
+### Dense retrieval against BM25
+
+`dense-minilm` is a small general-purpose bi-encoder (6 layers, 384
+dimensions), not trained on either dataset. Its scores match the MTEB
+leaderboard values for this model (0.645 on SciFact, 0.317 on NFCorpus), which
+checks the encoding and search path the same way the BEIR numbers check BM25.
+It is tested against `bm25` as its own family of two tests per dataset:
+
+| Dataset | Metric | Delta | 95% CI | W / T / L | p (Holm) |
+|---|---|---|---|---|---|
+| SciFact | nDCG@10 | -0.0377 | [-0.0731, -0.0025] | 64 / 164 / 72 | 0.067 |
+| SciFact | Recall@100 | -0.0026 | [-0.0347, +0.0303] | 15 / 272 / 13 | 0.90 |
+| NFCorpus | nDCG@10 | -0.0056 | [-0.0278, +0.0160] | 111 / 110 / 102 | 0.62 |
+| NFCorpus | Recall@100 | +0.0651 | [+0.0433, +0.0876] | 147 / 111 / 65 | 0.0002 |
+
+- **Dense does not beat a tuned BM25 at the top of the ranking.** On SciFact
+  it is 0.038 nDCG@10 behind (p = 0.033 raw, 0.067 after Holm); on NFCorpus
+  the two are indistinguishable. SciFact claims share precise technical terms
+  with their evidence, which is the case lexical matching handles well.
+- **Dense finds documents BM25 misses on the vocabulary-mismatch dataset.**
+  NFCorpus pairs lay queries with technical abstracts; dense raises
+  Recall@100 by 6.5 points (26% relative), winning on 147 queries and losing
+  on 65. On SciFact recall is unchanged.
+- **The two disagree on many queries.** Fewer than half the NFCorpus queries
+  are ties, and on SciFact each method wins nDCG@10 on roughly 70. Similar
+  means with different per-query wins is the precondition for fusion, which is
+  the next experiment: high recall from dense, precise ranking from BM25.
+- **The cost is in indexing.** Encoding the corpus takes 25-39 s on a laptop
+  CPU against well under a second for BM25; a query (encoding plus one
+  matrix-vector product) is about 5 ms.
+
 ## Usage
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
+# Dense pipelines also need (CPU-only torch first, to skip the CUDA wheels):
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -e ".[dense]"
 
 retrieval-lab fetch scifact                     # or nfcorpus; download, verify MD5, extract
 retrieval-lab run --dataset scifact --config configs/bm25.json
@@ -174,6 +210,28 @@ fingerprints or query sets are refused rather than compared. The test is
 checked against exact enumeration of all 2^n sign flips on small inputs. Both
 procedures are seeded, so a report is deterministic.
 
+**Dense search is exact before it is approximate.** Every query is scored
+against every document with one matrix-vector product. An ANN index (HNSW,
+IVF) trades recall for latency, and that trade can only be measured against an
+exact baseline; at a few thousand documents exact search costs 5 ms anyway.
+Ties are broken by document id, as in BM25.
+
+**Dense records reproduce within a tolerance, not exactly.** Embeddings differ
+in the last float bits across CPUs and BLAS builds, which can swap near-tied
+documents. `reproduce` therefore requires every mean metric within 0.001 and
+reports how many queries changed, instead of requiring identical per-query
+scores. BM25 stays on exact equality. The model is pinned to a Hugging Face
+commit, encoding is forced onto the CPU, and the batch size is part of the
+config, so the remaining variation is numerical, not a different model. The
+alternative, checking in the embeddings, would make the record exact but
+would stop it from testing that the model still produces them.
+
+**Dense dependencies are optional.** torch and sentence-transformers are
+several hundred megabytes. They live in the `dense` extra and are imported only
+when a dense pipeline is built, so the BM25 path and the metric tests run
+without them; the unit tests use a deterministic fake encoder. A test runs the
+CLI with numpy blocked to keep it that way.
+
 ## Layout
 
 ```
@@ -181,6 +239,8 @@ src/retrieval_lab/
   datasets.py   fetch (pinned MD5, safe extraction), load + validate, fingerprint
   text.py       analyzer: tokenise, stopwords, Porter stemming
   bm25.py       inverted index and Lucene-idf BM25
+  dense.py      bi-encoder, exact cosine search (optional dependencies)
+  retrievers.py one interface over every retriever kind
   metrics.py    nDCG / Recall / MRR at k, trec_eval conventions
   config.py     frozen, hashable pipeline configs
   runs.py       execute a pipeline, build and persist the run record
@@ -193,7 +253,7 @@ runs/           checked-in run records (evidence for the Results table)
 ## Testing
 
 ```bash
-pytest          # 49 tests, offline; no dataset download needed
+pytest          # 60 tests, offline; no dataset download needed
 ruff check . && ruff format --check .
 mypy            # strict
 ```
@@ -211,13 +271,16 @@ runs `reproduce` on every record in `runs/`, and prints both comparison tables.
 - Significance is per dataset. With 300 queries and mostly tied rankings,
   the tests can only detect fairly large effects; a non-significant delta is
   not evidence of no difference.
+- One dense model, and a small one. A larger or instruction-tuned encoder
+  (E5, BGE; the config already carries their prefixes) would likely beat
+  BM25 on SciFact; this is a baseline for fusion, not a model comparison.
 - Recorded latency is wall-clock on the machine that ran it and is excluded
   from the reproduction check.
 
 ## Roadmap
 
-1. Dense retrieval with a sentence-embedding model, then reciprocal-rank-fusion
-   hybrid, each as a measured delta.
+1. Reciprocal-rank-fusion hybrid of BM25 and dense, as a measured delta
+   against both.
 2. Cross-encoder reranking, with the latency cost recorded next to the quality gain.
 3. Chunking and ingestion strategy as a measured variable.
 4. An LLM-judge answer-faithfulness metric, validated against human labels

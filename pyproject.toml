@@ -17,7 +17,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Dense retrieval. Install CPU-only torch first to avoid the CUDA wheels:
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
+dense = [
+    "numpy>=2.0",
+    "sentence-transformers>=3.0",
+]
 dev = [
+    # The dense index is tested with a fake encoder; numpy is all it needs.
+    "numpy>=2.0",
     # Reference trec_eval implementation; the metric tests check equivalence against it.
     "pytrec-eval-terrier>=0.5.6",
     "pytest>=8.2",
@@ -49,7 +57,7 @@ strict = true
 mypy_path = "src"
 files = ["src", "tests"]
 
-# PyStemmer and pytrec_eval ship no type information.
+# PyStemmer and pytrec_eval ship no type information; sentence-transformers is optional.
 [[tool.mypy.overrides]]
-module = ["Stemmer", "pytrec_eval"]
+module = ["Stemmer", "pytrec_eval", "sentence_transformers"]
 ignore_missing_imports = true

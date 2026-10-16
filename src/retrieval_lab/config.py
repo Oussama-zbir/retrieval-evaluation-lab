@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,9 +36,26 @@ class BM25Config(_Frozen):
     analyzer: AnalyzerConfig = AnalyzerConfig()
 
 
+class DenseConfig(_Frozen):
+    """A bi-encoder: documents and queries embedded once, ranked by cosine similarity."""
+
+    kind: Literal["dense"] = "dense"
+    # A Hugging Face model id pinned to a commit, so the weights cannot change under a record.
+    model: str = Field(min_length=1)
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    # Instruction prefixes for models trained with them (E5, BGE); empty for the rest.
+    query_prefix: str = ""
+    document_prefix: str = ""
+    # Part of the config because padding within a batch can move the last float bits.
+    batch_size: int = Field(default=64, gt=0)
+
+
+RetrieverConfig = Annotated[BM25Config | DenseConfig, Field(discriminator="kind")]
+
+
 class PipelineConfig(_Frozen):
     name: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9-]*$")
-    retriever: BM25Config
+    retriever: RetrieverConfig
     # Depth of the ranking that is retrieved and evaluated.
     top_k: int = Field(default=100, gt=0)
 

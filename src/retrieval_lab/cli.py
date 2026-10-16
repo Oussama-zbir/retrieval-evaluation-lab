@@ -10,8 +10,15 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from retrieval_lab import compare, datasets
-from retrieval_lab.config import PipelineConfig
+from retrieval_lab.config import BM25Config, PipelineConfig
+from retrieval_lab.retrievers import MissingDependencyError
 from retrieval_lab.runs import RunRecord, execute
+
+# Largest change in a mean metric accepted when reproducing a dense record. BM25 is
+# integer arithmetic plus deterministic float sums and must reproduce exactly;
+# embeddings differ in the last bits across CPUs and BLAS builds, which can swap
+# near-tied documents. Per-query changes are reported, not failed on.
+DENSE_TOLERANCE = 1e-3
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -61,7 +68,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "compare":
             return _compare(args)
         return _run(args)
-    except (datasets.DatasetError, ValidationError, OSError, compare.ComparisonError) as exc:
+    except (
+        datasets.DatasetError,
+        ValidationError,
+        OSError,
+        compare.ComparisonError,
+        MissingDependencyError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -92,19 +105,32 @@ def _reproduce(args: argparse.Namespace) -> int:
         print("error: dataset files differ from the ones the record was measured on")
         return 1
     rerun = execute(dataset, recorded.pipeline)
+    exact = isinstance(recorded.pipeline.retriever, BM25Config)
+    tolerance = 0.0 if exact else DENSE_TOLERANCE
     drift = {
         name: (value, rerun.metrics.get(name))
         for name, value in recorded.metrics.items()
-        if rerun.metrics.get(name) != value
+        if (now := rerun.metrics.get(name)) is None or abs(now - value) > tolerance
     }
-    if rerun.per_query != recorded.per_query:
+    changed = sum(
+        rerun.per_query.get(query_id) != scores for query_id, scores in recorded.per_query.items()
+    )
+    if exact and rerun.per_query != recorded.per_query:
         drift.setdefault("per_query", (0.0, None))
     if drift:
         for name, (expected, actual) in drift.items():
             print(f"  {name}: recorded {expected}, now {actual}")
         print(f"{recorded.run_id}: NOT reproduced")
         return 1
-    print(f"{recorded.run_id}: reproduced ({len(recorded.per_query)} queries, metrics identical)")
+    queries = len(recorded.per_query)
+    if exact:
+        print(f"{recorded.run_id}: reproduced ({queries} queries, metrics identical)")
+    else:
+        largest = max(abs(rerun.metrics[name] - value) for name, value in recorded.metrics.items())
+        print(
+            f"{recorded.run_id}: reproduced within {tolerance:g} "
+            f"(largest mean change {largest:.6f}; {changed} of {queries} queries changed)"
+        )
     return 0
 
 

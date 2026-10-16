@@ -14,18 +14,21 @@ import platform
 import subprocess
 import time
 from datetime import UTC, datetime
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from retrieval_lab.bm25 import BM25Index
+from retrieval_lab import retrievers
 from retrieval_lab.config import PipelineConfig
 from retrieval_lab.datasets import Dataset
 from retrieval_lab.metrics import evaluate
 
 SCHEMA_VERSION = 1
 CUTOFFS = (10, 100)
+CORE_DEPENDENCIES = ("pydantic", "PyStemmer")
+# Optional; recorded when installed because they decide every embedding.
+DENSE_DEPENDENCIES = ("numpy", "sentence-transformers", "transformers", "torch")
 
 
 class _Record(BaseModel):
@@ -90,7 +93,7 @@ def execute(
     dataset: Dataset, pipeline: PipelineConfig, *, now: datetime | None = None
 ) -> RunRecord:
     started = time.perf_counter()
-    index = BM25Index(dataset.corpus.values(), pipeline.retriever)
+    index = retrievers.build(pipeline.retriever, dataset.corpus.values())
     index_seconds = time.perf_counter() - started
 
     rankings: dict[str, list[str]] = {}
@@ -118,7 +121,7 @@ def execute(
         pipeline=pipeline,
         config_hash=config_hash,
         code=code_info(),
-        index={"documents": len(index), "vocabulary": index.vocabulary_size},
+        index=index.describe(),
         metrics={name: round(value, 6) for name, value in means.items()},
         timing=Timing(
             index_seconds=round(index_seconds, 3),
@@ -143,8 +146,19 @@ def code_info() -> CodeInfo:
         git_dirty=None if sha is None else bool(status),
         package_version=version("retrieval-evaluation-lab"),
         python=platform.python_version(),
-        dependencies={name: version(name) for name in ("pydantic", "PyStemmer")},
+        dependencies=_installed(*CORE_DEPENDENCIES, *DENSE_DEPENDENCIES),
     )
+
+
+def _installed(*names: str) -> dict[str, str]:
+    """Versions of the named distributions that are installed; absent ones are left out."""
+    found: dict[str, str] = {}
+    for name in names:
+        try:
+            found[name] = version(name)
+        except PackageNotFoundError:
+            continue
+    return found
 
 
 def source_digest() -> str:

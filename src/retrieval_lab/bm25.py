@@ -57,6 +57,9 @@ class BM25Index:
     def vocabulary_size(self) -> int:
         return len(self._postings)
 
+    def describe(self) -> dict[str, int]:
+        return {"documents": len(self), "vocabulary": self.vocabulary_size}
+
     def search(self, query: str, k: int) -> Ranking:
         """Return up to ``k`` (doc id, score) pairs, best first. Only matching docs score."""
         k1_plus_1 = self.config.k1 + 1

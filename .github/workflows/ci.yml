@@ -56,8 +56,17 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # CPU wheels: the CUDA build of torch is several GB and unused here.
       - name: Install
-        run: pip install -e .
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dense]"
+
+      - name: Cache embedding models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('configs/dense-*.json') }}
 
       - name: Cache datasets
         uses: actions/cache@v4
@@ -76,10 +85,13 @@ jobs:
             retrieval-lab reproduce "$record"
           done
 
-      # Prints the README significance tables from the checked-in records.
+      # Prints the README significance tables from the checked-in records: the BM25
+      # variants as one family of tests, dense against BM25 as another.
       - name: Compare against the BM25 baseline
         run: |
           for dataset in scifact nfcorpus; do
             retrieval-lab compare runs/$dataset/*-bm25-780acdbb.json \
               runs/$dataset/*-bm25-k1-09-b-04-*.json runs/$dataset/*-bm25-no-stemming-*.json
+            retrieval-lab compare runs/$dataset/*-bm25-780acdbb.json \
+              runs/$dataset/*-dense-minilm-*.json
           done
