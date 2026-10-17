@@ -10,12 +10,13 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from retrieval_lab import compare, datasets
-from retrieval_lab.config import BM25Config, PipelineConfig
+from retrieval_lab.config import PipelineConfig, is_exact
 from retrieval_lab.retrievers import MissingDependencyError
 from retrieval_lab.runs import RunRecord, execute
 
-# Largest change in a mean metric accepted when reproducing a dense record. BM25 is
-# integer arithmetic plus deterministic float sums and must reproduce exactly;
+# Largest change in a mean metric accepted when reproducing a record that involves
+# embeddings (dense, or a hybrid with a dense part). BM25 is integer arithmetic plus
+# deterministic float sums and must reproduce exactly;
 # embeddings differ in the last bits across CPUs and BLAS builds, which can swap
 # near-tied documents. Per-query changes are reported, not failed on.
 DENSE_TOLERANCE = 1e-3
@@ -105,7 +106,7 @@ def _reproduce(args: argparse.Namespace) -> int:
         print("error: dataset files differ from the ones the record was measured on")
         return 1
     rerun = execute(dataset, recorded.pipeline)
-    exact = isinstance(recorded.pipeline.retriever, BM25Config)
+    exact = is_exact(recorded.pipeline.retriever)
     tolerance = 0.0 if exact else DENSE_TOLERANCE
     drift = {
         name: (value, rerun.metrics.get(name))

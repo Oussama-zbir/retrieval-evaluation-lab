@@ -13,22 +13,22 @@ change made it better?*
 
 ## Status
 
-Data handling, metrics, run records, a BM25 baseline and a first dense
-retriever on two BEIR datasets. Hybrid fusion, reranking and an LLM-judge
-metric come next (see [Roadmap](#roadmap)); each will be added as a measured
-delta against the baseline.
+Data handling, metrics, run records, a BM25 baseline, a first dense retriever
+and a reciprocal-rank-fusion hybrid of the two on two BEIR datasets. Reranking
+and an LLM-judge metric come next (see [Roadmap](#roadmap)); each will be added
+as a measured delta against the baseline.
 
 | Area | What exists |
 |---|---|
 | Data | SciFact and NFCorpus (BEIR); loader downloads pinned to the published MD5; zip-slip-safe extraction; qrels cross-checked against the corpus and queries |
 | Metrics | nDCG@k, Recall@k, MRR@k, tested for equivalence with `trec_eval` (via `pytrec_eval`) on randomised rankings |
-| Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration. Dense bi-encoder (sentence-transformers, model pinned to a commit) with exact cosine search in numpy |
+| Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration. Dense bi-encoder (sentence-transformers, model pinned to a commit) with exact cosine search in numpy. Reciprocal rank fusion of any two or more of these |
 | Run records | Dataset SHA-256 fingerprint, full pipeline config and hash, source digest, git SHA, library versions, mean and per-query metrics, latency |
-| Reproducibility | `retrieval-lab reproduce` re-runs a record; BM25 must match exactly, dense within 0.001 per mean metric. CI does this for every checked-in record |
+| Reproducibility | `retrieval-lab reproduce` re-runs a record; BM25 (and BM25-only fusion) must match exactly; anything with embeddings within 0.001 per mean metric. CI does this for every checked-in record |
 
 ## Results
 
-The same four pipelines on two datasets, so a conclusion is only stated if it
+The same five pipelines on two datasets, so a conclusion is only stated if it
 holds on more than one corpus.
 
 ### SciFact (BEIR), test split
@@ -37,10 +37,11 @@ holds on more than one corpus.
 
 | Pipeline | nDCG@10 | Recall@10 | Recall@100 | MRR@10 | p50 query |
 |---|---|---|---|---|---|
-| `bm25` (k1 1.2, b 0.75, stopwords + Porter) | **0.683** | **0.817** | 0.928 | **0.646** | 0.95 ms |
-| `bm25-k1-09-b-04` (Anserini's defaults) | 0.677 | 0.803 | **0.929** | 0.642 | 0.96 ms |
+| `bm25` (k1 1.2, b 0.75, stopwords + Porter) | 0.683 | 0.817 | 0.928 | 0.646 | 0.95 ms |
+| `bm25-k1-09-b-04` (Anserini's defaults) | 0.677 | 0.803 | 0.929 | 0.642 | 0.96 ms |
 | `bm25-no-stemming` (lowercase only) | 0.663 | 0.788 | 0.883 | 0.631 | 2.15 ms |
 | `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.645 | 0.783 | 0.925 | 0.605 | 5.1 ms |
+| `hybrid-bm25-minilm` (RRF of `bm25` + `dense-minilm`) | **0.718** | **0.851** | **0.955** | **0.684** | 7.3 ms |
 
 Records: [`runs/scifact/`](runs/scifact/). Configs: [`configs/`](configs/).
 
@@ -82,10 +83,11 @@ titles from NutritionFacts.org; documents are technical.
 
 | Pipeline | nDCG@10 | Recall@10 | Recall@100 | MRR@10 | p50 query |
 |---|---|---|---|---|---|
-| `bm25` (k1 1.2, b 0.75, stopwords + Porter) | **0.322** | 0.153 | 0.246 | **0.527** | 0.11 ms |
+| `bm25` (k1 1.2, b 0.75, stopwords + Porter) | 0.322 | 0.153 | 0.246 | 0.527 | 0.11 ms |
 | `bm25-k1-09-b-04` (Anserini's defaults) | 0.321 | 0.152 | 0.246 | 0.523 | 0.12 ms |
 | `bm25-no-stemming` (lowercase only) | 0.306 | 0.149 | 0.236 | 0.514 | 0.19 ms |
-| `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.317 | **0.155** | **0.311** | 0.508 | 4.7 ms |
+| `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.317 | 0.155 | 0.311 | 0.508 | 4.7 ms |
+| `hybrid-bm25-minilm` (RRF of `bm25` + `dense-minilm`) | **0.353** | **0.173** | **0.321** | **0.554** | 5.3 ms |
 
 Records: [`runs/nfcorpus/`](runs/nfcorpus/).
 
@@ -137,11 +139,42 @@ It is tested against `bm25` as its own family of two tests per dataset:
   on 65. On SciFact recall is unchanged.
 - **The two disagree on many queries.** Fewer than half the NFCorpus queries
   are ties, and on SciFact each method wins nDCG@10 on roughly 70. Similar
-  means with different per-query wins is the precondition for fusion, which is
-  the next experiment: high recall from dense, precise ranking from BM25.
+  means with different per-query wins is the precondition for fusion, tested
+  next.
 - **The cost is in indexing.** Encoding the corpus takes 25-39 s on a laptop
   CPU against well under a second for BM25; a query (encoding plus one
   matrix-vector product) is about 5 ms.
+
+### Hybrid: reciprocal rank fusion of BM25 and dense
+
+`hybrid-bm25-minilm` fuses the two rankings above with RRF (k = 60, each
+searched to depth 100). Neither parameter was tuned. It is tested against each
+of its components as a separate family of two tests per dataset:
+
+| Dataset | Baseline | Metric | Delta | 95% CI | W / T / L | p (Holm) |
+|---|---|---|---|---|---|---|
+| SciFact | `bm25` | nDCG@10 | +0.0353 | [+0.0121, +0.0580] | 74 / 196 / 30 | 0.004 |
+| SciFact | `bm25` | Recall@100 | +0.0274 | [+0.0067, +0.0507] | 13 / 285 / 2 | 0.013 |
+| SciFact | `dense-minilm` | nDCG@10 | +0.0730 | [+0.0494, +0.0972] | 83 / 190 / 27 | 0.0002 |
+| SciFact | `dense-minilm` | Recall@100 | +0.0300 | [+0.0067, +0.0533] | 11 / 287 / 2 | 0.023 |
+| NFCorpus | `bm25` | nDCG@10 | +0.0305 | [+0.0171, +0.0443] | 123 / 133 / 67 | 0.0002 |
+| NFCorpus | `bm25` | Recall@100 | +0.0750 | [+0.0576, +0.0936] | 154 / 141 / 28 | 0.0002 |
+| NFCorpus | `dense-minilm` | nDCG@10 | +0.0362 | [+0.0211, +0.0519] | 127 / 122 / 74 | 0.0002 |
+| NFCorpus | `dense-minilm` | Recall@100 | +0.0099 | [-0.0007, +0.0213] | 91 / 178 / 54 | 0.075 |
+
+- **Fusion beats both components at the top of the ranking, on both
+  datasets.** The expectation from the dense results was that fusion would
+  keep BM25's nDCG@10 and add dense recall. It does better: nDCG@10 rises
+  3-4 points over the stronger component on each dataset, including SciFact,
+  where dense alone was worse than BM25. Documents that both retrievers rank
+  highly are more often relevant than those only one of them ranks highly.
+- **Recall@100 improves on BM25 on both datasets.** Against dense on NFCorpus
+  the gain (+0.010) is not significant: fusion keeps nearly all of what dense
+  found, and only depth-100 candidates from either side can be recovered.
+- **Two indexes for one query.** A hybrid query runs both retrievers in
+  sequence (5-7 ms, dominated by query encoding) and the index costs the
+  dense encoding time. For a lab of this size that is free; in a service the
+  two searches would run concurrently.
 
 ## Usage
 
@@ -226,6 +259,18 @@ config, so the remaining variation is numerical, not a different model. The
 alternative, checking in the embeddings, would make the record exact but
 would stop it from testing that the model still produces them.
 
+**Fusion uses ranks, not scores.** BM25 scores are unbounded and
+query-dependent; cosine similarities sit in a narrow band near the top. A
+weighted score sum needs a normalisation and a weight, both tuned on the same
+queries it is then evaluated on. Reciprocal rank fusion (Cormack et al., 2009)
+needs neither: a document scores the sum of 1 / (60 + rank) over the rankings
+it appears in. A hybrid is a config holding its component configs, so the run
+record and hash cover both retrievers, and the components are searched to a
+`depth` (100) independent of `top_k`. The sum is taken in exact rational
+arithmetic: different rank pairs can have equal true sums (1/63 + 1/140 =
+1/84 + 1/90) whose float sums differ by one ulp, and that ulp, not the doc-id
+tie-break, would then decide the order.
+
 **Dense dependencies are optional.** torch and sentence-transformers are
 several hundred megabytes. They live in the `dense` extra and are imported only
 when a dense pipeline is built, so the BM25 path and the metric tests run
@@ -240,6 +285,7 @@ src/retrieval_lab/
   text.py       analyzer: tokenise, stopwords, Porter stemming
   bm25.py       inverted index and Lucene-idf BM25
   dense.py      bi-encoder, exact cosine search (optional dependencies)
+  hybrid.py     reciprocal rank fusion over component retrievers
   retrievers.py one interface over every retriever kind
   metrics.py    nDCG / Recall / MRR at k, trec_eval conventions
   config.py     frozen, hashable pipeline configs
@@ -253,7 +299,7 @@ runs/           checked-in run records (evidence for the Results table)
 ## Testing
 
 ```bash
-pytest          # 60 tests, offline; no dataset download needed
+pytest          # 69 tests, offline; no dataset download needed
 ruff check . && ruff format --check .
 mypy            # strict
 ```
@@ -274,16 +320,17 @@ runs `reproduce` on every record in `runs/`, and prints both comparison tables.
 - One dense model, and a small one. A larger or instruction-tuned encoder
   (E5, BGE; the config already carries their prefixes) would likely beat
   BM25 on SciFact; this is a baseline for fusion, not a model comparison.
+- Fusion parameters are the published defaults (k = 60, depth 100), not
+  tuned; with two datasets and no held-out split, tuning them would be
+  fitting the test queries. A hybrid query costs both retrievers in sequence.
 - Recorded latency is wall-clock on the machine that ran it and is excluded
   from the reproduction check.
 
 ## Roadmap
 
-1. Reciprocal-rank-fusion hybrid of BM25 and dense, as a measured delta
-   against both.
-2. Cross-encoder reranking, with the latency cost recorded next to the quality gain.
-3. Chunking and ingestion strategy as a measured variable.
-4. An LLM-judge answer-faithfulness metric, validated against human labels
+1. Cross-encoder reranking, with the latency cost recorded next to the quality gain.
+2. Chunking and ingestion strategy as a measured variable.
+3. An LLM-judge answer-faithfulness metric, validated against human labels
    before it is trusted.
 
 ## Data

@@ -50,7 +50,39 @@ class DenseConfig(_Frozen):
     batch_size: int = Field(default=64, gt=0)
 
 
-RetrieverConfig = Annotated[BM25Config | DenseConfig, Field(discriminator="kind")]
+# A retriever that ranks the corpus on its own; the parts a hybrid can fuse.
+BaseRetrieverConfig = Annotated[BM25Config | DenseConfig, Field(discriminator="kind")]
+
+
+class HybridConfig(_Frozen):
+    """Reciprocal rank fusion (Cormack et al., 2009) of independent retrievers.
+
+    A document scores sum(1 / (rrf_k + rank)) over the component rankings it appears
+    in, rank starting at 1. Only ranks are fused, so BM25 and cosine scores, which
+    live on unrelated scales, need no normalisation.
+    """
+
+    kind: Literal["hybrid"] = "hybrid"
+    retrievers: tuple[BaseRetrieverConfig, ...] = Field(min_length=2)
+    # 60 is the value from the paper and the default in Elasticsearch and OpenSearch.
+    rrf_k: int = Field(default=60, ge=0)
+    # Ranking depth taken from each component. A document below it contributes
+    # nothing from that component, so depth bounds what fusion can recover.
+    depth: int = Field(default=100, gt=0)
+
+
+RetrieverConfig = Annotated[BM25Config | DenseConfig | HybridConfig, Field(discriminator="kind")]
+
+
+def is_exact(config: RetrieverConfig) -> bool:
+    """True when the retriever is pure integer and fixed-order float arithmetic.
+
+    Such a pipeline must reproduce bit for bit; anything with embeddings only
+    within a tolerance.
+    """
+    if isinstance(config, HybridConfig):
+        return all(is_exact(part) for part in config.retrievers)
+    return isinstance(config, BM25Config)
 
 
 class PipelineConfig(_Frozen):
