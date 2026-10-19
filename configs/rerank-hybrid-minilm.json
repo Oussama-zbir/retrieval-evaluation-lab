@@ -1,0 +1,33 @@
+{
+  "name": "rerank-hybrid-minilm",
+  "retriever": {
+    "kind": "rerank",
+    "first_stage": {
+      "kind": "hybrid",
+      "retrievers": [
+        {
+          "kind": "bm25",
+          "k1": 1.2,
+          "b": 0.75,
+          "analyzer": {"lowercase": true, "stopwords": "lucene-english", "stemmer": "porter"}
+        },
+        {
+          "kind": "dense",
+          "model": "sentence-transformers/all-MiniLM-L6-v2",
+          "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+          "query_prefix": "",
+          "document_prefix": "",
+          "batch_size": 64
+        }
+      ],
+      "rrf_k": 60,
+      "depth": 100
+    },
+    "model": "cross-encoder/ms-marco-MiniLM-L6-v2",
+    "revision": "233902d25c440f23af6f7d6e94d2946bac0bee0a",
+    "depth": 100,
+    "max_length": 512,
+    "batch_size": 32
+  },
+  "top_k": 100
+}

@@ -57,7 +57,7 @@ strict = true
 mypy_path = "src"
 files = ["src", "tests"]
 
-# PyStemmer and pytrec_eval ship no type information; sentence-transformers is optional.
+# PyStemmer and pytrec_eval ship no type information; sentence-transformers and torch are optional.
 [[tool.mypy.overrides]]
-module = ["Stemmer", "pytrec_eval", "sentence_transformers"]
+module = ["Stemmer", "pytrec_eval", "sentence_transformers", "torch"]
 ignore_missing_imports = true

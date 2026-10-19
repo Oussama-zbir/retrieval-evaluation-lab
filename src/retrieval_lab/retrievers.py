@@ -6,9 +6,10 @@ from collections.abc import Iterable
 from typing import Protocol
 
 from retrieval_lab.bm25 import BM25Index
-from retrieval_lab.config import BM25Config, HybridConfig, RetrieverConfig
+from retrieval_lab.config import BM25Config, HybridConfig, RerankConfig, RetrieverConfig
 from retrieval_lab.datasets import Document
 from retrieval_lab.hybrid import FusionIndex
+from retrieval_lab.rerank import RerankIndex, load_scorer
 
 
 class MissingDependencyError(RuntimeError):
@@ -24,6 +25,9 @@ class Retriever(Protocol):
 
 
 def build(config: RetrieverConfig, documents: Iterable[Document]) -> Retriever:
+    if isinstance(config, RerankConfig):
+        corpus = list(documents)
+        return RerankIndex(build(config.first_stage, corpus), corpus, config, load_scorer(config))
     if isinstance(config, HybridConfig):
         corpus = list(documents)
         return FusionIndex([build(part, corpus) for part in config.retrievers], config)

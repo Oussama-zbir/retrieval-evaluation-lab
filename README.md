@@ -13,22 +13,22 @@ change made it better?*
 
 ## Status
 
-Data handling, metrics, run records, a BM25 baseline, a first dense retriever
-and a reciprocal-rank-fusion hybrid of the two on two BEIR datasets. Reranking
-and an LLM-judge metric come next (see [Roadmap](#roadmap)); each will be added
-as a measured delta against the baseline.
+Data handling, metrics, run records, a BM25 baseline, a first dense retriever,
+a reciprocal-rank-fusion hybrid of the two, and a cross-encoder reranker over
+the hybrid, on two BEIR datasets. Chunking and an LLM-judge metric come next
+(see [Roadmap](#roadmap)); each will be added as a measured delta.
 
 | Area | What exists |
 |---|---|
 | Data | SciFact and NFCorpus (BEIR); loader downloads pinned to the published MD5; zip-slip-safe extraction; qrels cross-checked against the corpus and queries |
 | Metrics | nDCG@k, Recall@k, MRR@k, tested for equivalence with `trec_eval` (via `pytrec_eval`) on randomised rankings |
-| Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration. Dense bi-encoder (sentence-transformers, model pinned to a commit) with exact cosine search in numpy. Reciprocal rank fusion of any two or more of these |
+| Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration. Dense bi-encoder (sentence-transformers, model pinned to a commit) with exact cosine search in numpy. Reciprocal rank fusion of any two or more of these. Cross-encoder reranking of any of them to a configured depth |
 | Run records | Dataset SHA-256 fingerprint, full pipeline config and hash, source digest, git SHA, library versions, mean and per-query metrics, latency |
-| Reproducibility | `retrieval-lab reproduce` re-runs a record; BM25 (and BM25-only fusion) must match exactly; anything with embeddings within 0.001 per mean metric. CI does this for every checked-in record |
+| Reproducibility | `retrieval-lab reproduce` re-runs a record; BM25 (and BM25-only fusion) must match exactly; anything with a neural model within 0.001 per mean metric. CI does this for every checked-in record |
 
 ## Results
 
-The same five pipelines on two datasets, so a conclusion is only stated if it
+The same six pipelines on two datasets, so a conclusion is only stated if it
 holds on more than one corpus.
 
 ### SciFact (BEIR), test split
@@ -42,6 +42,7 @@ holds on more than one corpus.
 | `bm25-no-stemming` (lowercase only) | 0.663 | 0.788 | 0.883 | 0.631 | 2.15 ms |
 | `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.645 | 0.783 | 0.925 | 0.605 | 5.1 ms |
 | `hybrid-bm25-minilm` (RRF of `bm25` + `dense-minilm`) | **0.718** | **0.851** | **0.955** | **0.684** | 7.3 ms |
+| `rerank-hybrid-minilm` (ms-marco-MiniLM-L6-v2 cross-encoder over the hybrid's top 100) | 0.687 | 0.809 | **0.955** | 0.657 | 1,329 ms |
 
 Records: [`runs/scifact/`](runs/scifact/). Configs: [`configs/`](configs/).
 
@@ -87,7 +88,8 @@ titles from NutritionFacts.org; documents are technical.
 | `bm25-k1-09-b-04` (Anserini's defaults) | 0.321 | 0.152 | 0.246 | 0.523 | 0.12 ms |
 | `bm25-no-stemming` (lowercase only) | 0.306 | 0.149 | 0.236 | 0.514 | 0.19 ms |
 | `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.317 | 0.155 | 0.311 | 0.508 | 4.7 ms |
-| `hybrid-bm25-minilm` (RRF of `bm25` + `dense-minilm`) | **0.353** | **0.173** | **0.321** | **0.554** | 5.3 ms |
+| `hybrid-bm25-minilm` (RRF of `bm25` + `dense-minilm`) | **0.353** | **0.173** | **0.321** | 0.554 | 5.3 ms |
+| `rerank-hybrid-minilm` (ms-marco-MiniLM-L6-v2 cross-encoder over the hybrid's top 100) | **0.353** | 0.165 | **0.321** | **0.584** | 1,360 ms |
 
 Records: [`runs/nfcorpus/`](runs/nfcorpus/).
 
@@ -175,6 +177,39 @@ of its components as a separate family of two tests per dataset:
   sequence (5-7 ms, dominated by query encoding) and the index costs the
   dense encoding time. For a lab of this size that is free; in a service the
   two searches would run concurrently.
+
+### Cross-encoder reranking over the hybrid
+
+`rerank-hybrid-minilm` rescores the hybrid's top 100 with
+`cross-encoder/ms-marco-MiniLM-L6-v2` (pinned commit, 512 tokens per pair) and
+is tested against the hybrid it reorders. Recall@100 is identical by
+construction (depth = 100), so only the nDCG@10 test carries information:
+
+| Dataset | Metric | Delta | 95% CI | W / T / L | p | p (Holm) |
+|---|---|---|---|---|---|---|
+| SciFact | nDCG@10 | -0.0306 | [-0.0600, -0.0008] | 48 / 186 / 66 | 0.043 | 0.086 |
+| NFCorpus | nDCG@10 | -0.0001 | [-0.0130, +0.0129] | 103 / 125 / 95 | 0.98 | 1.00 |
+
+- **The reranker does not improve on the hybrid.** On NFCorpus it reorders
+  most rankings (198 of 323 queries change nDCG@10) with no net effect; MRR@10
+  rises from 0.554 to 0.584, so it is slightly better at the first relevant
+  document and slightly worse below it. On SciFact it loses more queries than
+  it wins; the loss is not significant after Holm but the interval excludes
+  zero. It still beats `bm25` on NFCorpus (+0.030 nDCG@10, Holm p 0.0002) and
+  ties it on SciFact (+0.005, p 0.76), in line with the BEIR paper's BM25 +
+  cross-encoder numbers (0.688 and 0.350).
+- **Why, plausibly:** the model is trained on MS MARCO web queries and
+  passages. SciFact claims and NFCorpus lay titles against PubMed abstracts
+  are out of its domain, and abstracts often exceed what a 6-layer model reads
+  well. The first stage already has 0.72 nDCG@10 on SciFact; a reranker has to
+  be better than that ordering, not better than BM25.
+- **It costs about 185x the query latency.** p50 is 1.3 s per query on a
+  laptop CPU against 5-7 ms for the hybrid: 100 forward passes per query. In a
+  service this is a GPU, a smaller `depth`, or both; the next measurement is
+  `depth` as a quality / latency curve.
+- **The decision this supports:** do not add a general-purpose reranker to
+  this pipeline on the strength of its reputation. It would need a
+  domain-matched or larger model, and a run record showing the gain, first.
 
 ## Usage
 
@@ -271,6 +306,17 @@ arithmetic: different rank pairs can have equal true sums (1/63 + 1/140 =
 1/84 + 1/90) whose float sums differ by one ulp, and that ulp, not the doc-id
 tie-break, would then decide the order.
 
+**Reranking is a stage wrapping a first-stage config, and only reorders.**
+A `rerank` config holds its first stage (BM25, dense or a hybrid; rerankers do
+not nest), a cross-encoder pinned to a commit, a `depth` and a `max_length`.
+The cross-encoder rescores the first stage's top `depth`; anything below keeps
+its first-stage order after them. So Recall@`depth` is fixed by the first
+stage by construction, and `depth` is the knob that trades quality for
+latency: every candidate is one forward pass at query time, which is why the
+cross-encoder is not the first stage. Scores are raw logits: the sigmoid most
+cross-encoder wrappers apply does not change the order but saturates to
+exactly 1.0 in float32 for confident pairs, turning them into doc-id ties.
+
 **Dense dependencies are optional.** torch and sentence-transformers are
 several hundred megabytes. They live in the `dense` extra and are imported only
 when a dense pipeline is built, so the BM25 path and the metric tests run
@@ -286,6 +332,7 @@ src/retrieval_lab/
   bm25.py       inverted index and Lucene-idf BM25
   dense.py      bi-encoder, exact cosine search (optional dependencies)
   hybrid.py     reciprocal rank fusion over component retrievers
+  rerank.py     cross-encoder reranking of a first-stage ranking
   retrievers.py one interface over every retriever kind
   metrics.py    nDCG / Recall / MRR at k, trec_eval conventions
   config.py     frozen, hashable pipeline configs
@@ -299,7 +346,7 @@ runs/           checked-in run records (evidence for the Results table)
 ## Testing
 
 ```bash
-pytest          # 69 tests, offline; no dataset download needed
+pytest          # 76 tests, offline; no dataset download needed
 ruff check . && ruff format --check .
 mypy            # strict
 ```
@@ -323,13 +370,15 @@ runs `reproduce` on every record in `runs/`, and prints both comparison tables.
 - Fusion parameters are the published defaults (k = 60, depth 100), not
   tuned; with two datasets and no held-out split, tuning them would be
   fitting the test queries. A hybrid query costs both retrievers in sequence.
+- One cross-encoder, small and trained on web search; the negative reranking
+  result is about this model on these domains, not about reranking in general.
 - Recorded latency is wall-clock on the machine that ran it and is excluded
   from the reproduction check.
 
 ## Roadmap
 
-1. Cross-encoder reranking, with the latency cost recorded next to the quality gain.
-2. Chunking and ingestion strategy as a measured variable.
+1. Chunking and ingestion strategy as a measured variable.
+2. Rerank depth as a measured quality / latency curve (one config per depth).
 3. An LLM-judge answer-faithfulness metric, validated against human labels
    before it is trusted.
 

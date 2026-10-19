@@ -66,7 +66,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-${{ hashFiles('configs/dense-*.json', 'configs/hybrid-*.json') }}
+          key: hf-${{ hashFiles('configs/dense-*.json', 'configs/hybrid-*.json', 'configs/rerank-*.json') }}
 
       - name: Cache datasets
         uses: actions/cache@v4
@@ -87,7 +87,8 @@ jobs:
 
       # Prints the README significance tables from the checked-in records: the BM25
       # variants as one family of tests, dense against BM25 as another, and the
-      # hybrid against each of its two components.
+      # hybrid against each of its two components, and the reranker against the
+      # hybrid it reorders.
       - name: Compare against the BM25 baseline
         run: |
           for dataset in scifact nfcorpus; do
@@ -98,4 +99,6 @@ jobs:
             for component in runs/$dataset/*-bm25-780acdbb.json runs/$dataset/*-dense-minilm-*.json; do
               retrieval-lab compare "$component" runs/$dataset/*-hybrid-bm25-minilm-*.json
             done
+            retrieval-lab compare runs/$dataset/*-hybrid-bm25-minilm-*.json \
+              runs/$dataset/*-rerank-hybrid-minilm-*.json
           done

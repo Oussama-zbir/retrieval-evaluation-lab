@@ -71,13 +71,40 @@ class HybridConfig(_Frozen):
     depth: int = Field(default=100, gt=0)
 
 
-RetrieverConfig = Annotated[BM25Config | DenseConfig | HybridConfig, Field(discriminator="kind")]
+# A retriever that can feed a reranker: anything except another reranker.
+FirstStageConfig = Annotated[BM25Config | DenseConfig | HybridConfig, Field(discriminator="kind")]
+
+
+class RerankConfig(_Frozen):
+    """A cross-encoder that rescores the top of a first-stage ranking.
+
+    The model reads query and document together, which a bi-encoder cannot, at the
+    cost of one forward pass per (query, document) pair at query time. Documents
+    below ``depth`` keep their first-stage order, after the reranked ones.
+    """
+
+    kind: Literal["rerank"] = "rerank"
+    first_stage: FirstStageConfig
+    # A Hugging Face cross-encoder pinned to a commit, as for dense models.
+    model: str = Field(min_length=1)
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    # Number of first-stage documents rescored per query: the latency knob, and the
+    # ceiling on what reranking can move into the top ranks.
+    depth: int = Field(default=100, gt=0)
+    # Tokens per (query, document) pair; longer pairs are truncated.
+    max_length: int = Field(default=512, gt=0)
+    batch_size: int = Field(default=32, gt=0)
+
+
+RetrieverConfig = Annotated[
+    BM25Config | DenseConfig | HybridConfig | RerankConfig, Field(discriminator="kind")
+]
 
 
 def is_exact(config: RetrieverConfig) -> bool:
     """True when the retriever is pure integer and fixed-order float arithmetic.
 
-    Such a pipeline must reproduce bit for bit; anything with embeddings only
+    Such a pipeline must reproduce bit for bit; anything with a neural model only
     within a tolerance.
     """
     if isinstance(config, HybridConfig):
