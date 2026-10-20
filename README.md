@@ -387,3 +387,6 @@ runs `reproduce` on every record in `runs/`, and prints both comparison tables.
 SciFact (Wadden et al., 2020) and NFCorpus (Boteva et al., 2016) as
 distributed by BEIR (Thakur et al., 2021). Datasets are downloaded at run time
 and not redistributed here.
+
+
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Oussama-zbir/badge.svg)](https://hub.xerj.org/contributors/Oussama-zbir)
