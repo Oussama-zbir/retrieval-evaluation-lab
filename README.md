@@ -1,5 +1,7 @@
 # Retrieval Evaluation Lab
 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Oussama-zbir/badge.svg)](https://hub.xerj.org/contributors/Oussama-zbir)
+
 [![CI](https://github.com/Oussama-zbir/retrieval-evaluation-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/Oussama-zbir/retrieval-evaluation-lab/actions/workflows/ci.yml)
 
 Retrieval pipelines for RAG, measured instead of demoed. Each pipeline runs
@@ -388,5 +390,3 @@ SciFact (Wadden et al., 2020) and NFCorpus (Boteva et al., 2016) as
 distributed by BEIR (Thakur et al., 2021). Datasets are downloaded at run time
 and not redistributed here.
 
-
-[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Oussama-zbir/badge.svg)](https://hub.xerj.org/contributors/Oussama-zbir)
