@@ -1,10 +1,14 @@
 name: CI
 
+# Docs-only changes cannot change a run record, and reproducing the reranker
+# records alone takes over an hour of runner time.
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
   pull_request:
     branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,10 +23,10 @@ jobs:
         python-version: ["3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -44,14 +48,23 @@ jobs:
       - name: Test (pytest)
         run: pytest -v
 
-  # Every checked-in run record must reproduce exactly from the public data.
+  # Every checked-in run record must reproduce from the public data. One job per
+  # dataset: records never span datasets, and the two halves run in parallel.
   reproduce:
+    name: reproduce (${{ matrix.dataset }})
     runs-on: ubuntu-latest
+    # About 50 minutes per dataset, mostly cross-encoder inference; a hung
+    # download should fail the job, not hold the runner for six hours.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset: [scifact, nfcorpus]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -63,25 +76,30 @@ jobs:
           pip install -e ".[dense]"
 
       - name: Cache embedding models
-        uses: actions/cache@v4
+        id: hf-cache
+        uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: hf-${{ hashFiles('configs/dense-*.json', 'configs/hybrid-*.json', 'configs/rerank-*.json') }}
 
-      - name: Cache datasets
-        uses: actions/cache@v4
+      - name: Cache dataset
+        uses: actions/cache@v6
         with:
-          path: data
-          key: beir-${{ hashFiles('src/retrieval_lab/datasets.py') }}
+          path: |
+            data/${{ matrix.dataset }}
+            data/${{ matrix.dataset }}.zip
+          key: beir-${{ matrix.dataset }}-${{ hashFiles('src/retrieval_lab/datasets.py') }}
 
-      - name: Fetch and verify datasets
-        run: |
-          retrieval-lab fetch scifact
-          retrieval-lab fetch nfcorpus
+      - name: Fetch and verify dataset
+        run: retrieval-lab fetch ${{ matrix.dataset }}
 
+      # Models are pinned to a revision, so a cache hit holds every file needed;
+      # offline mode then skips the Hub round trip each model load makes.
       - name: Reproduce run records
+        env:
+          HF_HUB_OFFLINE: ${{ steps.hf-cache.outputs.cache-hit == 'true' && '1' || '' }}
         run: |
-          for record in runs/*/*.json; do
+          for record in runs/${{ matrix.dataset }}/*.json; do
             retrieval-lab reproduce "$record"
           done
 
@@ -90,15 +108,15 @@ jobs:
       # hybrid against each of its two components, and the reranker against the
       # hybrid it reorders.
       - name: Compare against the BM25 baseline
+        env:
+          DATASET: ${{ matrix.dataset }}
         run: |
-          for dataset in scifact nfcorpus; do
-            retrieval-lab compare runs/$dataset/*-bm25-780acdbb.json \
-              runs/$dataset/*-bm25-k1-09-b-04-*.json runs/$dataset/*-bm25-no-stemming-*.json
-            retrieval-lab compare runs/$dataset/*-bm25-780acdbb.json \
-              runs/$dataset/*-dense-minilm-*.json
-            for component in runs/$dataset/*-bm25-780acdbb.json runs/$dataset/*-dense-minilm-*.json; do
-              retrieval-lab compare "$component" runs/$dataset/*-hybrid-bm25-minilm-*.json
-            done
-            retrieval-lab compare runs/$dataset/*-hybrid-bm25-minilm-*.json \
-              runs/$dataset/*-rerank-hybrid-minilm-*.json
+          retrieval-lab compare runs/$DATASET/*-bm25-780acdbb.json \
+            runs/$DATASET/*-bm25-k1-09-b-04-*.json runs/$DATASET/*-bm25-no-stemming-*.json
+          retrieval-lab compare runs/$DATASET/*-bm25-780acdbb.json \
+            runs/$DATASET/*-dense-minilm-*.json
+          for component in runs/$DATASET/*-bm25-780acdbb.json runs/$DATASET/*-dense-minilm-*.json; do
+            retrieval-lab compare "$component" runs/$DATASET/*-hybrid-bm25-minilm-*.json
           done
+          retrieval-lab compare runs/$DATASET/*-hybrid-bm25-minilm-*.json \
+            runs/$DATASET/*-rerank-hybrid-minilm-*.json

@@ -353,8 +353,11 @@ ruff check . && ruff format --check .
 mypy            # strict
 ```
 
-CI runs these on Python 3.12 and 3.13. A separate job fetches both datasets,
-runs `reproduce` on every record in `runs/`, and prints both comparison tables.
+CI runs these on Python 3.12 and 3.13. A separate job per dataset fetches it,
+runs `reproduce` on every record in `runs/<dataset>/`, and prints its comparison
+tables. Each takes about 50 minutes on a GitHub runner, almost all of it
+cross-encoder inference (~100 forward passes per query on CPU), so the two run in
+parallel and the workflow skips changes that touch only Markdown or the license.
 
 ## Limitations
 
