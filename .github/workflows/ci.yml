@@ -105,8 +105,8 @@ jobs:
 
       # Prints the README significance tables from the checked-in records: the BM25
       # variants as one family of tests, dense against BM25 as another, and the
-      # hybrid against each of its two components, and the reranker against the
-      # hybrid it reorders.
+      # hybrid against each of its two components, the reranker against the
+      # hybrid it reorders, and chunked dense against whole-document dense.
       - name: Compare against the BM25 baseline
         env:
           DATASET: ${{ matrix.dataset }}
@@ -114,9 +114,11 @@ jobs:
           retrieval-lab compare runs/$DATASET/*-bm25-780acdbb.json \
             runs/$DATASET/*-bm25-k1-09-b-04-*.json runs/$DATASET/*-bm25-no-stemming-*.json
           retrieval-lab compare runs/$DATASET/*-bm25-780acdbb.json \
-            runs/$DATASET/*-dense-minilm-*.json
-          for component in runs/$DATASET/*-bm25-780acdbb.json runs/$DATASET/*-dense-minilm-*.json; do
+            runs/$DATASET/*-dense-minilm-adc3aaae.json
+          for component in runs/$DATASET/*-bm25-780acdbb.json runs/$DATASET/*-dense-minilm-adc3aaae.json; do
             retrieval-lab compare "$component" runs/$DATASET/*-hybrid-bm25-minilm-*.json
           done
           retrieval-lab compare runs/$DATASET/*-hybrid-bm25-minilm-*.json \
             runs/$DATASET/*-rerank-hybrid-minilm-*.json
+          retrieval-lab compare runs/$DATASET/*-dense-minilm-adc3aaae.json \
+            runs/$DATASET/*-dense-minilm-chunked-*.json

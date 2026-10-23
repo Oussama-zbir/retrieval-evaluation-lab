@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _Frozen(BaseModel):
@@ -36,6 +36,28 @@ class BM25Config(_Frozen):
     analyzer: AnalyzerConfig = AnalyzerConfig()
 
 
+class ChunkingConfig(_Frozen):
+    """Overlapping word windows over a document body, scored separately.
+
+    A bi-encoder truncates its input (all-MiniLM-L6-v2 at 256 word pieces), so text
+    past the limit is never embedded. Each window gets the title prepended and its
+    own vector; a document scores as its best window (MaxP, Dai and Callan, 2019).
+    Windows are counted in whitespace words, not model tokens, so the chunker does
+    not depend on the model.
+    """
+
+    max_words: int = Field(default=128, gt=0)
+    # Words between window starts; max_words - stride words overlap.
+    stride: int = Field(default=96, gt=0)
+    aggregation: Literal["max"] = "max"
+
+    @model_validator(mode="after")
+    def _no_gaps(self) -> ChunkingConfig:
+        if self.stride > self.max_words:
+            raise ValueError("stride larger than max_words would skip words")
+        return self
+
+
 class DenseConfig(_Frozen):
     """A bi-encoder: documents and queries embedded once, ranked by cosine similarity."""
 
@@ -48,6 +70,8 @@ class DenseConfig(_Frozen):
     document_prefix: str = ""
     # Part of the config because padding within a batch can move the last float bits.
     batch_size: int = Field(default=64, gt=0)
+    # None embeds each document as one (possibly truncated) text.
+    chunking: ChunkingConfig | None = None
 
 
 # A retriever that ranks the corpus on its own; the parts a hybrid can fuse.
@@ -119,7 +143,11 @@ class PipelineConfig(_Frozen):
     top_k: int = Field(default=100, gt=0)
 
     def config_hash(self) -> str:
-        canonical = json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        # Unset optional sections are left out, so adding one does not change the hash
+        # of every config written before it existed.
+        canonical = json.dumps(
+            self.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":")
+        )
         return hashlib.sha256(canonical.encode()).hexdigest()
 
     @classmethod

@@ -11,9 +11,9 @@ import pytest
 
 from retrieval_lab import datasets, dense, retrievers
 from retrieval_lab.cli import main
-from retrieval_lab.config import DenseConfig, PipelineConfig
+from retrieval_lab.config import ChunkingConfig, DenseConfig, PipelineConfig
 from retrieval_lab.datasets import Document
-from retrieval_lab.dense import DenseIndex, Embeddings
+from retrieval_lab.dense import DenseIndex, Embeddings, chunk
 from retrieval_lab.runs import RunRecord, execute
 
 NOW = datetime(2026, 10, 15, 12, 0, 0, tzinfo=UTC)
@@ -77,13 +77,59 @@ def test_encoder_row_count_is_checked() -> None:
         def encode(self, texts: Sequence[str]) -> Embeddings:
             return super().encode(texts)[:1]
 
-    with pytest.raises(ValueError, match="1 rows for 2 docs"):
+    with pytest.raises(ValueError, match="1 rows for 2 texts"):
         DenseIndex(docs("cats", "dogs"), CONFIG, Short())
 
 
 def test_revision_must_be_a_commit_sha() -> None:
     with pytest.raises(ValueError, match="revision"):
         DenseConfig(model="m", revision="main")
+
+
+def test_chunks_cover_every_word_within_the_window_size() -> None:
+    words = [f"w{i}" for i in range(10)]
+    windows = chunk(" ".join(words), ChunkingConfig(max_words=4, stride=3))
+    assert windows == ["w0 w1 w2 w3", "w3 w4 w5 w6", "w6 w7 w8 w9"]
+    # Uneven tail: the last window is pulled back to end at the last word.
+    windows = chunk(" ".join(words[:9]), ChunkingConfig(max_words=4, stride=3))
+    assert windows == ["w0 w1 w2 w3", "w3 w4 w5 w6", "w5 w6 w7 w8"]
+
+
+def test_short_and_empty_texts_keep_one_window() -> None:
+    config = ChunkingConfig(max_words=4, stride=2)
+    assert chunk("a  b\nc", config) == ["a b c"]
+    assert chunk("", config) == [""]
+    assert chunk("a  b", None) == ["a  b"]
+
+
+def test_stride_cannot_skip_words() -> None:
+    with pytest.raises(ValueError, match="skip words"):
+        ChunkingConfig(max_words=4, stride=5)
+
+
+def test_chunked_document_scores_as_its_best_window() -> None:
+    chunked = CONFIG.model_copy(update={"chunking": ChunkingConfig(max_words=2, stride=2)})
+    # "cats" only appears past the first window, where a truncating encoder stops.
+    # Windows score 0, 0.71 and 1: max gives 1, where a sum or mean would not.
+    late = Document(doc_id="late", title="Pets", text="bread bread cats dogs cats cats")
+    mixed = Document(doc_id="mixed", title="", text="cats dogs")
+    encoder = BagOfWords()
+    index = DenseIndex([late, mixed], chunked, encoder)
+    assert encoder.calls[0] == ["Pets bread bread", "Pets cats dogs", "Pets cats cats", "cats dogs"]
+    ranking = index.search("cats", 2)
+    assert [doc_id for doc_id, _ in ranking] == ["late", "mixed"]
+    assert [score for _, score in ranking] == pytest.approx([1.0, 2**-0.5])
+    assert index.describe() == {"documents": 2, "dimensions": len(VOCABULARY), "chunks": 4}
+
+
+def test_unchunked_config_hashes_are_unchanged() -> None:
+    # Records written before chunking existed keep their run ids and CI globs.
+    root = Path(__file__).resolve().parents[1]
+    records = sorted(root.glob("runs/*/*.json"))
+    assert records
+    for path in records:
+        record = RunRecord.read(path)
+        assert record.pipeline.config_hash() == record.config_hash, path.name
 
 
 def install(monkeypatch: pytest.MonkeyPatch, encoder: BagOfWords) -> None:

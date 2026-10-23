@@ -17,7 +17,7 @@ from typing import Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from retrieval_lab.config import DenseConfig
+from retrieval_lab.config import ChunkingConfig, DenseConfig
 from retrieval_lab.datasets import Document
 from retrieval_lab.retrievers import MissingDependencyError
 
@@ -39,12 +39,20 @@ class DenseIndex:
         self._encoder = encoder
         docs = list(documents)
         self._doc_ids = [doc.doc_id for doc in docs]
-        # Same document text as BM25: title and body.
-        self._matrix = encoder.encode(
-            [f"{config.document_prefix}{doc.title} {doc.text}".strip() for doc in docs]
-        )
-        if self._matrix.shape[0] != len(docs):
-            raise ValueError(f"encoder returned {self._matrix.shape[0]} rows for {len(docs)} docs")
+        # Same document text as BM25: title and body, whole or in windows.
+        texts: list[str] = []
+        self._starts = np.zeros(len(docs), dtype=np.intp)
+        for i, doc in enumerate(docs):
+            self._starts[i] = len(texts)
+            texts.extend(
+                f"{config.document_prefix}{doc.title} {body}".strip()
+                for body in chunk(doc.text, config.chunking)
+            )
+        self._matrix = encoder.encode(texts)
+        if self._matrix.shape[0] != len(texts):
+            raise ValueError(
+                f"encoder returned {self._matrix.shape[0]} rows for {len(texts)} texts"
+            )
         # Rank of each document id in sorted order: the tie-break key.
         self._id_rank = np.argsort(np.argsort(np.array(self._doc_ids, dtype=object)))
 
@@ -52,7 +60,10 @@ class DenseIndex:
         return len(self._doc_ids)
 
     def describe(self) -> dict[str, int]:
-        return {"documents": len(self), "dimensions": int(self._matrix.shape[1])}
+        stats = {"documents": len(self), "dimensions": int(self._matrix.shape[1])}
+        if self.config.chunking is not None:
+            stats["chunks"] = int(self._matrix.shape[0])
+        return stats
 
     def search(self, query: str, k: int) -> Ranking:
         """Return up to ``k`` (doc id, score) pairs, best first. Every document scores."""
@@ -61,12 +72,31 @@ class DenseIndex:
             return []
         [query_vector] = self._encoder.encode([f"{self.config.query_prefix}{query}"])
         scores = self._matrix @ query_vector
+        if self.config.chunking is not None:
+            # Chunks are contiguous per document: the best chunk scores the document.
+            scores = np.maximum.reduceat(scores, self._starts)
         # Every document scoring at least the k-th best score, so ties at the cut-off
         # are resolved by doc id instead of by argpartition's internal order.
         threshold = np.partition(scores, -k)[-k]
         candidates = np.flatnonzero(scores >= threshold)
         order = np.lexsort((self._id_rank[candidates], -scores[candidates]))[:k]
         return [(self._doc_ids[i], float(scores[i])) for i in candidates[order]]
+
+
+def chunk(text: str, config: ChunkingConfig | None) -> list[str]:
+    """Split ``text`` into windows of ``max_words`` words, ``stride`` words apart.
+
+    Always at least one window, so every document keeps a vector. The last window
+    ends at the last word, so it may overlap its predecessor by more than the rest.
+    """
+    if config is None:
+        return [text]
+    words = text.split()
+    if len(words) <= config.max_words:
+        return [" ".join(words)]
+    starts = list(range(0, len(words) - config.max_words, config.stride))
+    starts.append(len(words) - config.max_words)
+    return [" ".join(words[start : start + config.max_words]) for start in starts]
 
 
 class SentenceTransformerEncoder:

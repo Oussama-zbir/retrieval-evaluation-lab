@@ -16,21 +16,22 @@ change made it better?*
 ## Status
 
 Data handling, metrics, run records, a BM25 baseline, a first dense retriever,
-a reciprocal-rank-fusion hybrid of the two, and a cross-encoder reranker over
-the hybrid, on two BEIR datasets. Chunking and an LLM-judge metric come next
-(see [Roadmap](#roadmap)); each will be added as a measured delta.
+a reciprocal-rank-fusion hybrid of the two, a cross-encoder reranker over
+the hybrid, and document chunking for the dense encoder, on two BEIR datasets.
+An LLM-judge metric comes next (see [Roadmap](#roadmap)), added as a measured
+delta like the rest.
 
 | Area | What exists |
 |---|---|
 | Data | SciFact and NFCorpus (BEIR); loader downloads pinned to the published MD5; zip-slip-safe extraction; qrels cross-checked against the corpus and queries |
 | Metrics | nDCG@k, Recall@k, MRR@k, tested for equivalence with `trec_eval` (via `pytrec_eval`) on randomised rankings |
-| Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration. Dense bi-encoder (sentence-transformers, model pinned to a commit) with exact cosine search in numpy. Reciprocal rank fusion of any two or more of these. Cross-encoder reranking of any of them to a configured depth |
+| Retrieval | Okapi BM25 with Lucene's idf over an in-memory inverted index; analyzer (stopwords, Porter stemming) as configuration. Dense bi-encoder (sentence-transformers, model pinned to a commit) with exact cosine search in numpy, over whole documents or overlapping word windows (best window scores the document). Reciprocal rank fusion of any two or more of these. Cross-encoder reranking of any of them to a configured depth |
 | Run records | Dataset SHA-256 fingerprint, full pipeline config and hash, source digest, git SHA, library versions, mean and per-query metrics, latency |
 | Reproducibility | `retrieval-lab reproduce` re-runs a record; BM25 (and BM25-only fusion) must match exactly; anything with a neural model within 0.001 per mean metric. CI does this for every checked-in record |
 
 ## Results
 
-The same six pipelines on two datasets, so a conclusion is only stated if it
+The same seven pipelines on two datasets, so a conclusion is only stated if it
 holds on more than one corpus.
 
 ### SciFact (BEIR), test split
@@ -43,6 +44,7 @@ holds on more than one corpus.
 | `bm25-k1-09-b-04` (Anserini's defaults) | 0.677 | 0.803 | 0.929 | 0.642 | 0.96 ms |
 | `bm25-no-stemming` (lowercase only) | 0.663 | 0.788 | 0.883 | 0.631 | 2.15 ms |
 | `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.645 | 0.783 | 0.925 | 0.605 | 5.1 ms |
+| `dense-minilm-chunked` (same model, 128-word windows, best window) | 0.666 | 0.815 | 0.937 | 0.623 | 5.5 ms |
 | `hybrid-bm25-minilm` (RRF of `bm25` + `dense-minilm`) | **0.718** | **0.851** | **0.955** | **0.684** | 7.3 ms |
 | `rerank-hybrid-minilm` (ms-marco-MiniLM-L6-v2 cross-encoder over the hybrid's top 100) | 0.687 | 0.809 | **0.955** | 0.657 | 1,329 ms |
 
@@ -90,6 +92,7 @@ titles from NutritionFacts.org; documents are technical.
 | `bm25-k1-09-b-04` (Anserini's defaults) | 0.321 | 0.152 | 0.246 | 0.523 | 0.12 ms |
 | `bm25-no-stemming` (lowercase only) | 0.306 | 0.149 | 0.236 | 0.514 | 0.19 ms |
 | `dense-minilm` (all-MiniLM-L6-v2, exact cosine) | 0.317 | 0.155 | 0.311 | 0.508 | 4.7 ms |
+| `dense-minilm-chunked` (same model, 128-word windows, best window) | 0.326 | 0.162 | 0.311 | 0.526 | 4.9 ms |
 | `hybrid-bm25-minilm` (RRF of `bm25` + `dense-minilm`) | **0.353** | **0.173** | **0.321** | 0.554 | 5.3 ms |
 | `rerank-hybrid-minilm` (ms-marco-MiniLM-L6-v2 cross-encoder over the hybrid's top 100) | **0.353** | 0.165 | **0.321** | **0.584** | 1,360 ms |
 
@@ -213,6 +216,46 @@ construction (depth = 100), so only the nDCG@10 test carries information:
   this pipeline on the strength of its reputation. It would need a
   domain-matched or larger model, and a run record showing the gain, first.
 
+### Chunking for the dense encoder
+
+all-MiniLM-L6-v2 reads at most 256 word pieces and silently drops the rest.
+The median document is 316 word pieces on SciFact and 357 on NFCorpus, so
+`dense-minilm` embeds a truncated text for 71% and 79% of the corpus: whatever
+an abstract says after its first ~170 words is invisible to it.
+`dense-minilm-chunked` splits each body into 128-word windows starting 96
+words apart, prepends the title to each, and scores a document by its best
+window (MaxP). That is 11,860 vectors for 5,183 SciFact documents and 9,020
+for 3,633 NFCorpus documents, and leaves 16% and 13% of windows over the
+limit. Tested against whole-document `dense-minilm`, one family of two tests
+per dataset:
+
+| Dataset | Metric | Delta | 95% CI | W / T / L | p | p (Holm) |
+|---|---|---|---|---|---|---|
+| SciFact | nDCG@10 | +0.0212 | [+0.0055, +0.0370] | 43 / 222 / 35 | 0.010 | 0.020 |
+| SciFact | Recall@100 | +0.0117 | [-0.0050, +0.0300] | 6 / 292 / 2 | 0.30 | 0.30 |
+| NFCorpus | nDCG@10 | +0.0096 | [+0.0009, +0.0199] | 81 / 151 / 91 | 0.043 | 0.087 |
+| NFCorpus | Recall@100 | -0.0006 | [-0.0081, +0.0063] | 74 / 200 / 49 | 0.87 | 0.87 |
+
+- **Chunking helps at the top of the ranking, not in recall.** SciFact
+  nDCG@10 rises 0.021 (significant after Holm) and Recall@10 by 3.2 points;
+  NFCorpus moves the same way (+0.010) but does not survive the adjustment.
+  Recall@100 is unchanged on both: the truncated prefix already places most
+  relevant documents somewhere in the top 100, and the later text mostly
+  improves where they land.
+- **The gain is smaller than the truncation suggests.** Three quarters of the
+  documents were cut, yet most rankings do not change (222 of 300 SciFact
+  queries tie on nDCG@10). An abstract's first 170 words usually carry its
+  topic; the later sentences matter for specific claims, which is SciFact's
+  case more than NFCorpus's.
+- **The cost is at indexing, not at query time.** 2.3-2.5x as many vectors,
+  so encoding takes 78 s instead of 39 s on SciFact; a query is still one
+  encoding plus one matrix-vector product (5.5 ms against 5.1 ms), and the
+  max over windows is one `np.maximum.reduceat`. With an ANN index the cost
+  would also be 2.5x the memory and a top-k that must over-fetch windows to
+  return k distinct documents.
+- **It does not close the gap to BM25 on SciFact** (0.666 against 0.683):
+  truncation was not the main reason dense loses there.
+
 ## Usage
 
 ```bash
@@ -296,6 +339,17 @@ config, so the remaining variation is numerical, not a different model. The
 alternative, checking in the embeddings, would make the record exact but
 would stop it from testing that the model still produces them.
 
+**Chunks are counted in words, scored by their best window.** Windows are
+whitespace words, not model tokens, so the chunker is the same for every
+encoder and a config states its own limits. The price is that a window's token
+count varies, which is why the share still truncated is measured and reported
+rather than assumed to be zero. Max over windows (MaxP) was chosen over mean or
+sum because a relevant passage should not be diluted by the rest of a long
+document, and documents with more windows should not score higher for being
+long. The `chunking` section is optional and left out of the config hash when
+unset, so every record written before it existed keeps its run id; a test
+recomputes the hash of every checked-in record.
+
 **Fusion uses ranks, not scores.** BM25 scores are unbounded and
 query-dependent; cosine similarities sit in a narrow band near the top. A
 weighted score sum needs a normalisation and a weight, both tuned on the same
@@ -332,7 +386,7 @@ src/retrieval_lab/
   datasets.py   fetch (pinned MD5, safe extraction), load + validate, fingerprint
   text.py       analyzer: tokenise, stopwords, Porter stemming
   bm25.py       inverted index and Lucene-idf BM25
-  dense.py      bi-encoder, exact cosine search (optional dependencies)
+  dense.py      bi-encoder, word-window chunking, exact cosine search (optional dependencies)
   hybrid.py     reciprocal rank fusion over component retrievers
   rerank.py     cross-encoder reranking of a first-stage ranking
   retrievers.py one interface over every retriever kind
@@ -348,7 +402,7 @@ runs/           checked-in run records (evidence for the Results table)
 ## Testing
 
 ```bash
-pytest          # 76 tests, offline; no dataset download needed
+pytest          # 81 tests, offline; no dataset download needed
 ruff check . && ruff format --check .
 mypy            # strict
 ```
@@ -382,8 +436,8 @@ parallel and the workflow skips changes that touch only Markdown or the license.
 
 ## Roadmap
 
-1. Chunking and ingestion strategy as a measured variable.
-2. Rerank depth as a measured quality / latency curve (one config per depth).
+1. Rerank depth as a measured quality / latency curve (one config per depth).
+2. Window size as a curve, and the chunked encoder as the hybrid's dense side.
 3. An LLM-judge answer-faithfulness metric, validated against human labels
    before it is trusted.
 
